@@ -1,3 +1,5 @@
+/* ── Create button ────────────────────────────────────────────────────────── */
+
 .inherit-create-btn {
 	display: inline-flex;
 	align-items: center;
@@ -25,17 +27,133 @@
 	transform: scale(1.15);
 }
 
+/* ── Rule card ────────────────────────────────────────────────────────────── */
+
 .inherit-rule {
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 6px;
-	padding: 12px 16px;
+	border-radius: 8px;
+	padding: 14px 16px;
 	margin-bottom: 16px;
 }
 
-.inherit-rule h4 {
-	margin: 0 0 8px 0;
+.inherit-rule-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.inherit-rule-field-input {
+	flex: 1;
+	font-size: var(--font-ui-medium);
+	font-weight: 600;
+	background: transparent;
+	border: none;
+	border-bottom: 2px solid var(--interactive-accent);
+	border-radius: 0;
+	padding: 2px 4px;
+	color: var(--text-normal);
+}
+
+.inherit-rule-field-input:focus {
+	outline: none;
+	border-bottom-color: var(--interactive-accent-hover);
+}
+
+.inherit-rule-remove {
+	background: none;
+	border: none;
+	cursor: pointer;
+	color: var(--text-muted);
+	font-size: 14px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	transition: color 0.1s, background 0.1s;
+}
+
+.inherit-rule-remove:hover {
+	color: var(--text-error);
+	background: var(--background-modifier-error);
+}
+
+/* ── Inject frontmatter ───────────────────────────────────────────────────── */
+
+.inherit-section-label {
 	font-size: var(--font-ui-small);
+	font-weight: 600;
 	color: var(--text-muted);
 	text-transform: uppercase;
 	letter-spacing: 0.05em;
+	margin-bottom: 8px;
+}
+
+.inherit-inject-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+
+.inherit-inject-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.inherit-inject-key,
+.inherit-inject-val {
+	flex: 1;
+	padding: 4px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.inherit-inject-key {
+	flex: 0 0 38%;
+	font-family: var(--font-monospace);
+}
+
+.inherit-inject-del {
+	background: none;
+	border: none;
+	cursor: pointer;
+	color: var(--text-muted);
+	padding: 2px 6px;
+	border-radius: 4px;
+	transition: color 0.1s, background 0.1s;
+}
+
+.inherit-inject-del:hover {
+	color: var(--text-error);
+	background: var(--background-modifier-error);
+}
+
+.inherit-inject-add {
+	background: none;
+	border: 1px dashed var(--background-modifier-border);
+	color: var(--text-muted);
+	border-radius: 4px;
+	padding: 4px 10px;
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+	transition: color 0.1s, border-color 0.1s;
+	align-self: flex-start;
+}
+
+.inherit-inject-add:hover {
+	color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+}
+
+.inherit-empty-hint {
+	font-size: var(--font-ui-small);
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.inherit-inject-section {
+	margin-bottom: 4px;
 }

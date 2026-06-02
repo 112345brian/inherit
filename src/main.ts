@@ -152,9 +152,18 @@ export default class InheritPlugin extends Plugin {
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
+				// Open the file so Templater and Linter can act on it
+			const leaf = this.app.workspace.getLeaf(false);
+			await leaf.openFile(newFile);
+
 			// Apply Templater template if configured
 			if (rule.templatePath) {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
+			}
+
+			// Run linter if configured
+			if (rule.runLinter) {
+				await this.runLinter();
 			}
 
 			new Notice(`Created: ${linkText}`);
@@ -186,6 +195,22 @@ export default class InheritPlugin extends Plugin {
 		}
 		// default: vault root
 		return `${name}.md`;
+	}
+
+	/**
+	 * Run Obsidian Linter on the currently active file.
+	 * Fails silently if Linter is not installed.
+	 */
+	private async runLinter(): Promise<void> {
+		try {
+			// Small delay so Templater (if any) has finished writing
+			await new Promise((r) => setTimeout(r, 100));
+			(this.app as any).commands.executeCommandById(
+				'obsidian-linter:lint-file',
+			);
+		} catch {
+			// Linter not installed — ignore
+		}
 	}
 
 	/**
