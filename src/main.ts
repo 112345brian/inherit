@@ -183,14 +183,9 @@ export default class InheritPlugin extends Plugin {
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
-			// 1. Templater — needs the file to be active
+			// 1. Templater — write directly to file, no need to open it
 			if (rule.templatePath) {
-				const leaf = this.app.workspace.getLeaf(false);
-				await leaf.openFile(newFile, { state: { mode: 'source' } });
-				await new Promise((r) => setTimeout(r, 150));
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
-				// Navigate back so the note doesn't stay open
-				await this.app.workspace.getLeaf(false).openFile(sourceFile);
 			}
 
 			// 2. Linter — use internal API directly on the file (no need to open)
@@ -279,7 +274,8 @@ export default class InheritPlugin extends Plugin {
 		if (!(templateFile instanceof TFile)) return;
 
 		try {
-			await templater.templater.append_template_to_active_file(templateFile);
+			// write_template_to_file works without the file being open/active
+			await templater.templater.write_template_to_file(templateFile, file);
 		} catch {
 			// Templater API may vary — ignore
 		}
