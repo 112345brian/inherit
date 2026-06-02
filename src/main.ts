@@ -5,7 +5,7 @@ import {
 	InheritSettings,
 	InheritSettingTab,
 } from './settings';
-import { runMerge } from './merge';
+import { runMerge, parseFrontmatterString, serializeFrontmatter } from './merge';
 
 export default class InheritPlugin extends Plugin {
 	settings!: InheritSettings;
@@ -208,27 +208,30 @@ export default class InheritPlugin extends Plugin {
 		sourceBasename: string,
 		rule: FieldRule,
 	): Promise<void> {
-		await new Promise((r) => setTimeout(r, 150));
+		// Wait long enough for Linter (or other plugins) to auto-run first.
+		// We write LAST so our serializer has the final say on wikilink quoting.
+		// Obsidian's internal YAML writer (used by processFrontMatter) does not
+		// quote [[wikilink]] strings — our custom serializeFrontmatter does.
+		await new Promise((r) => setTimeout(r, 600));
 
-		// processFrontMatter correctly quotes scalar [[wikilink]] strings.
-		// The bug we hit earlier was using arrays — wikilinks inside arrays
-		// are not quoted. Scalar wikilinks work fine.
-		await (this.app as any).fileManager.processFrontMatter(
-			file,
-			(currentFm: Record<string, unknown>) => {
-				const { merged } = runMerge(
-					sourceFm,
-					currentFm,
-					rule.inject,
-					this.settings.alwaysInherit,
-					rule.inheritUp,
-					sourceBasename,
-				);
-				for (const [k, v] of Object.entries(merged)) {
-					currentFm[k] = v;
-				}
-			},
+		const raw = await this.app.vault.read(file);
+		const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+		const currentFm = parseFrontmatterString(fmMatch?.[1] ?? '');
+		const body = fmMatch
+			? raw.slice(fmMatch[0].length).trimStart()
+			: raw.trimStart();
+
+		const { merged } = runMerge(
+			sourceFm,
+			currentFm,
+			rule.inject,
+			this.settings.alwaysInherit,
+			rule.inheritUp,
+			sourceBasename,
 		);
+
+		const yaml = serializeFrontmatter(merged);
+		await this.app.vault.modify(file, `---\n${yaml}\n---\n\n${body}`);
 	}
 
 	// ─── Path resolution ──────────────────────────────────────────────────────
