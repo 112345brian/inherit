@@ -13,8 +13,6 @@ export default class InheritPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		console.log('[Inherit] plugin loaded, rules:', this.settings.rules.length);
-		new Notice('[Inherit] loaded');
 		this.addSettingTab(new InheritSettingTab(this.app, this));
 
 		// Attach buttons whenever the active leaf changes or layout updates
@@ -158,7 +156,6 @@ export default class InheritPlugin extends Plugin {
 		btn.addEventListener('click', async (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			new Notice(`[Inherit] creating: ${linkText}`);
 			await this.createNote(linkText, sourcePath, rule);
 			btn.remove();
 		});
@@ -228,8 +225,6 @@ export default class InheritPlugin extends Plugin {
 				sourceBasename,
 			);
 
-			new Notice(`[Inherit debug] up=${JSON.stringify(merged['up'])} inheritUp=${rule.inheritUp} src=${sourceBasename} currentFm.up=${JSON.stringify(currentFm['up'])}`, 10000);
-
 			const yaml = serializeFrontmatter(merged);
 			return `---\n${yaml}\n---\n\n${body}`;
 		};
@@ -256,7 +251,6 @@ export default class InheritPlugin extends Plugin {
 			this.app.vault.offref(ref);
 			await new Promise((r) => setTimeout(r, 200));
 			const fixed = await writeAndFix();
-			new Notice(`[Inherit] re-applying after Linter: ${(fixed.match(/^up:.*/m)?.[0] ?? 'not found')}`, 5000);
 			ownWriteCount++;
 			await this.app.vault.modify(file, fixed);
 		});
