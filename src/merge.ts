@@ -134,7 +134,7 @@ export function runMerge(
 	for (const f of fields) {
 		orderedMerged[f.key] = f.value;
 	}
-	const yaml = stringifyYaml(orderedMerged).trimEnd();
+	const yaml = quoteWikilinks(stringifyYaml(orderedMerged).trimEnd());
 
 	return { fields, yaml };
 }
@@ -146,6 +146,20 @@ export function parseFieldValue(value: string): unknown {
 	} catch {
 		return value;
 	}
+}
+
+/**
+ * stringifyYaml doesn't quote strings that start with `[[`, which YAML
+ * interprets as a nested flow sequence. Fix any such values after the fact.
+ *
+ * Handles both scalar lines:  `up: [[Note Name]]`
+ * and list items:             `  - [[Note Name]]`
+ */
+export function quoteWikilinks(yaml: string): string {
+	return yaml.replace(
+		/^(\s*(?:[-\w][\w\s-]*:\s*|[-]\s*))(\[\[.+?\]\])(\s*)$/gm,
+		'$1"$2"$3',
+	);
 }
 
 export function parseFrontmatterString(raw: string): Record<string, unknown> {
