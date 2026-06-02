@@ -186,9 +186,6 @@ export default class InheritPlugin extends Plugin {
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
-			const leaf = this.app.workspace.getLeaf(false);
-			await leaf.openFile(newFile, { state: { mode: 'source' } });
-
 			if (rule.templatePath) {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
 			}
