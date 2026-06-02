@@ -13,6 +13,8 @@ export default class InheritPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		console.log('[Inherit] plugin loaded, rules:', this.settings.rules.length);
+		new Notice('[Inherit] loaded');
 		this.addSettingTab(new InheritSettingTab(this.app, this));
 
 		// Attach buttons whenever the active leaf changes or layout updates
@@ -156,6 +158,7 @@ export default class InheritPlugin extends Plugin {
 		btn.addEventListener('click', async (e) => {
 			e.preventDefault();
 			e.stopPropagation();
+			new Notice(`[Inherit] creating: ${linkText}`);
 			await this.createNote(linkText, sourcePath, rule);
 			btn.remove();
 		});
@@ -178,7 +181,7 @@ export default class InheritPlugin extends Plugin {
 			this.app.metadataCache.getFileCache(sourceFile)?.frontmatter ?? {};
 
 		const targetPath = this.resolveNewNotePath(linkText, sourcePath);
-		const content = `# ${linkText}\n`;
+		const content = '';
 
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
@@ -208,30 +211,63 @@ export default class InheritPlugin extends Plugin {
 		sourceBasename: string,
 		rule: FieldRule,
 	): Promise<void> {
-		// Wait long enough for Linter (or other plugins) to auto-run first.
-		// We write LAST so our serializer has the final say on wikilink quoting.
-		// Obsidian's internal YAML writer (used by processFrontMatter) does not
-		// quote [[wikilink]] strings — our custom serializeFrontmatter does.
+		// Wait for Linter / other plugins to run on file open first
 		await new Promise((r) => setTimeout(r, 600));
 
-		const raw = await this.app.vault.read(file);
-		const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-		const currentFm = parseFrontmatterString(fmMatch?.[1] ?? '');
-		const body = fmMatch
-			? raw.slice(fmMatch[0].length).trimStart()
-			: raw.trimStart();
+		const writeAndFix = async () => {
+			const raw = await this.app.vault.read(file);
+			const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+			const currentFm = parseFrontmatterString(fmMatch?.[1] ?? '');
+			const body = fmMatch
+				? raw.slice(fmMatch[0].length).trimStart()
+				: raw.trimStart();
 
-		const { merged } = runMerge(
-			sourceFm,
-			currentFm,
-			rule.inject,
-			this.settings.alwaysInherit,
-			rule.inheritUp,
-			sourceBasename,
-		);
+			const { merged } = runMerge(
+				sourceFm,
+				currentFm,
+				rule.inject,
+				this.settings.alwaysInherit,
+				rule.inheritUp,
+				sourceBasename,
+			);
 
-		const yaml = serializeFrontmatter(merged);
-		await this.app.vault.modify(file, `---\n${yaml}\n---\n\n${body}`);
+			const yaml = serializeFrontmatter(merged);
+			return `---\n${yaml}\n---\n\n${body}`;
+		};
+
+		// First write
+		const content = await writeAndFix();
+		new Notice(`[Inherit] writing up: ${(content.match(/^up:.*/m)?.[0] ?? 'not found')}`, 5000);
+
+		// Track our own writes so we don't react to them
+		let ownWriteCount = 0;
+		let reapplied = false;
+
+		const ref = (this.app.vault as any).on('modify', async (modified: TFile) => {
+			if (modified.path !== file.path) return;
+			if (ownWriteCount > 0) {
+				// This event is from our own vault.modify — skip it
+				ownWriteCount--;
+				return;
+			}
+			if (reapplied) return;
+
+			// An external plugin (Linter) modified the file after us.
+			// Re-apply our fix one final time.
+			reapplied = true;
+			this.app.vault.offref(ref);
+			await new Promise((r) => setTimeout(r, 200));
+			const fixed = await writeAndFix();
+			new Notice(`[Inherit] re-applying after Linter: ${(fixed.match(/^up:.*/m)?.[0] ?? 'not found')}`, 5000);
+			ownWriteCount++;
+			await this.app.vault.modify(file, fixed);
+		});
+
+		// Cleanup after 5s
+		setTimeout(() => this.app.vault.offref(ref), 5000);
+
+		ownWriteCount++;
+		await this.app.vault.modify(file, content);
 	}
 
 	// ─── Path resolution ──────────────────────────────────────────────────────
