@@ -1,4 +1,4 @@
-import { runMerge, serializeFrontmatter } from './merge';
+import { runMerge } from './merge';
 
 // Minimal Obsidian shims for the test environment
 (globalThis as any).parseYaml = (s: string) => {
@@ -23,20 +23,10 @@ test('basic note creation with inheritUp produces quoted wikilink', () => {
 		'person',  // sourceName
 	);
 
-	// Use serializeFrontmatter (what actually gets written to disk)
-	const fm = serializeFrontmatter(merged);
-	const result = `---\n${fm}\n---\n\n# mama-yo\n`;
-
-	expect(result).toBe(
-`---
-up:
-  - "[[person]]"
----
-
-# mama-yo
-`
-	);
-	expect(result).not.toContain('- - ');
+	// up should be a scalar string — processFrontMatter quotes scalar
+	// wikilinks correctly; arrays with wikilinks are not quoted
+	expect(merged['up']).toBe('[[person]]');
+	expect(merged['up']).not.toEqual(expect.arrayContaining([expect.anything()]));
 });
 
 test('inject field with overwrite wins over template', () => {

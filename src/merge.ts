@@ -55,17 +55,18 @@ export function runMerge(
 		}
 	}
 
-	// 3. `up` — stored as array for Breadcrumbs compatibility
+	// 3. `up` — scalar string; processFrontMatter quotes scalar wikilinks
+	//    correctly but fails on wikilinks inside arrays
 	if (inheritUp) {
 		const upVal = `[[${sourceName}]]`;
 		const existing = fields.find((f) => f.key === 'up');
 		if (existing) {
-			existing.value = [upVal];
+			existing.value = upVal;
 			existing.origin = 'up';
 		} else {
-			fields.push({ key: 'up', value: [upVal], origin: 'up' });
+			fields.push({ key: 'up', value: upVal, origin: 'up' });
 		}
-		merged['up'] = [upVal];
+		merged['up'] = upVal;
 	}
 
 	// 4. Inject fields with conflict resolution
