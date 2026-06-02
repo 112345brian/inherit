@@ -178,7 +178,7 @@ export default class InheritPlugin extends Plugin {
 			this.app.metadataCache.getFileCache(sourceFile)?.frontmatter ?? {};
 
 		const targetPath = this.resolveNewNotePath(linkText, sourcePath);
-		const content = `---\n---\n\n# ${linkText}\n`;
+		const content = `# ${linkText}\n`;
 
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
@@ -211,9 +211,14 @@ export default class InheritPlugin extends Plugin {
 		await new Promise((r) => setTimeout(r, 150));
 
 		const raw = await this.app.vault.read(file);
-		const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+
+		// Match an existing frontmatter block if Templater wrote one
+		const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
 		const templateFm = parseFrontmatterString(fmMatch?.[1] ?? '');
-		const body = fmMatch ? raw.slice(fmMatch[0].length) : '\n' + raw;
+		// Everything after the frontmatter block (or the full content if none)
+		const body = fmMatch
+			? raw.slice(fmMatch[0].length).replace(/^\n*/, '\n\n')
+			: '\n\n' + raw.replace(/^\n*/, '');
 
 		const { yaml } = runMerge(
 			sourceFm,

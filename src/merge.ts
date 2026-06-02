@@ -149,15 +149,16 @@ export function parseFieldValue(value: string): unknown {
 }
 
 /**
- * stringifyYaml doesn't quote strings that start with `[[`, which YAML
- * interprets as a nested flow sequence. Fix any such values after the fact.
+ * stringifyYaml doesn't quote strings starting with `[[` — YAML interprets
+ * bare `[[foo]]` as a nested flow sequence. Fix after the fact.
  *
- * Handles both scalar lines:  `up: [[Note Name]]`
- * and list items:             `  - [[Note Name]]`
+ * Handles scalar lines:   `up: [[Note Name]]`
+ * and list items:         `  - [[Note Name]]`
+ * Skips already-quoted:   `up: "[[Note Name]]"` or `up: '[[Note Name]]'`
  */
 export function quoteWikilinks(yaml: string): string {
 	return yaml.replace(
-		/^(\s*(?:[-\w][\w\s-]*:\s*|[-]\s*))(\[\[.+?\]\])(\s*)$/gm,
+		/^(\s*(?:[\w-][\w\s-]*:\s*|-\s+))(?!['"])(\[\[.+?\]\])(\s*)$/gm,
 		'$1"$2"$3',
 	);
 }
