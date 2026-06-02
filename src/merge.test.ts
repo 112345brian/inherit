@@ -1,4 +1,4 @@
-import { runMerge } from './merge';
+import { runMerge, serializeFrontmatter } from './merge';
 
 // Minimal Obsidian shims for the test environment
 (globalThis as any).parseYaml = (s: string) => {
@@ -14,7 +14,7 @@ import { runMerge } from './merge';
 // ─── The contract ─────────────────────────────────────────────────────────────
 
 test('basic note creation with inheritUp produces quoted wikilink', () => {
-	const { yaml } = runMerge(
+	const { merged } = runMerge(
 		{},        // sourceFm
 		{},        // templateFm (nothing from Templater)
 		[],        // inject fields
@@ -23,7 +23,9 @@ test('basic note creation with inheritUp produces quoted wikilink', () => {
 		'person',  // sourceName
 	);
 
-	const result = `---\n${yaml}\n---\n\n# mama-yo\n`;
+	// Use serializeFrontmatter (what actually gets written to disk)
+	const fm = serializeFrontmatter(merged);
+	const result = `---\n${fm}\n---\n\n# mama-yo\n`;
 
 	expect(result).toBe(
 `---
@@ -34,7 +36,6 @@ up:
 # mama-yo
 `
 	);
-	// Also verify up is not a nested sequence
 	expect(result).not.toContain('- - ');
 });
 

@@ -162,3 +162,36 @@ export function parseFrontmatterString(raw: string): Record<string, unknown> {
 		return {};
 	}
 }
+
+/**
+ * Serialize a frontmatter object to a YAML string we fully control.
+ * Does NOT use stringifyYaml — we need deterministic quoting of wikilinks.
+ */
+export function serializeFrontmatter(fm: Record<string, unknown>): string {
+	return Object.entries(fm)
+		.map(([key, value]) => serializeField(key, value))
+		.join('\n');
+}
+
+function serializeField(key: string, value: unknown): string {
+	if (Array.isArray(value)) {
+		if (value.length === 0) return `${key}: []`;
+		return `${key}:\n${value.map((item) => `  - ${serializeScalar(item)}`).join('\n')}`;
+	}
+	return `${key}: ${serializeScalar(value)}`;
+}
+
+function serializeScalar(value: unknown): string {
+	if (value === null || value === undefined) return 'null';
+	if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+	if (typeof value === 'string') {
+		const needsQuoting =
+			value === '' ||
+			/^[[\]{}>|*&!%@`'"#]/.test(value) ||
+			value.includes(': ') ||
+			/^(true|false|null|~|\d)/.test(value);
+		if (needsQuoting) return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+		return value;
+	}
+	return JSON.stringify(value);
+}
