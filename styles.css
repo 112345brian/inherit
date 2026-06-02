@@ -157,3 +157,16 @@
 .inherit-inject-section {
 	margin-bottom: 4px;
 }
+
+/* ── Strategy dropdown ────────────────────────────────────────────────────── */
+
+.inherit-inject-strategy {
+	flex: 0 0 auto;
+	padding: 4px 6px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}

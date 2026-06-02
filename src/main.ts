@@ -1,7 +1,8 @@
-import { App, Notice, Plugin, TFile, stringifyYaml } from 'obsidian';
+import { Notice, Plugin, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
 	FieldRule,
+	InjectField,
 	InheritSettings,
 	InheritSettingTab,
 } from './settings';
@@ -20,34 +21,22 @@ export default class InheritPlugin extends Plugin {
 	// ─── Post processor ───────────────────────────────────────────────────────
 
 	private postProcessor(el: HTMLElement, ctx: { sourcePath: string }) {
-		// Only act on the frontmatter / properties block
 		const propertiesEl = el.querySelector('.metadata-container');
 		if (!propertiesEl) return;
-
 		this.attachButtons(propertiesEl as HTMLElement, ctx.sourcePath);
 	}
 
 	// ─── Button attachment ────────────────────────────────────────────────────
 
-	/**
-	 * Walk the rendered properties block, find internal links inside watched
-	 * fields, and attach a ⊕ button to unresolved ones (and optionally resolved).
-	 */
 	attachButtons(container: HTMLElement, sourcePath: string) {
 		const watchedFields = new Set(
 			this.settings.rules.map((r) => r.field.toLowerCase()),
 		);
 		if (watchedFields.size === 0) return;
 
-		// Each property row looks like:
-		//   .metadata-property[data-property-key="person"]
-		//     .metadata-property-value
-		//       .multi-select-container | .metadata-link-inner a.internal-link
 		const rows = container.querySelectorAll('.metadata-property');
 		rows.forEach((row) => {
-			const key = row
-				.getAttribute('data-property-key')
-				?.toLowerCase();
+			const key = row.getAttribute('data-property-key')?.toLowerCase();
 			if (!key || !watchedFields.has(key)) return;
 
 			const rule = this.settings.rules.find(
@@ -63,19 +52,12 @@ export default class InheritPlugin extends Plugin {
 					anchor.textContent?.trim() ||
 					'';
 				if (!linkText) return;
-
-				// Skip if button already attached
-				if (anchor.parentElement?.querySelector('.inherit-create-btn'))
-					return;
+				if (anchor.parentElement?.querySelector('.inherit-create-btn')) return;
 
 				const resolved = this.app.metadataCache.getFirstLinkpathDest(
 					linkText,
 					sourcePath,
 				);
-
-				// Show button for unresolved links (note doesn't exist yet)
-				// For resolved links that are missing expected fields, we could
-				// optionally patch — for now just unresolved.
 				if (!resolved) {
 					this.attachButton(anchor, linkText, sourcePath, rule);
 				}
@@ -122,46 +104,44 @@ export default class InheritPlugin extends Plugin {
 		const sourceMeta =
 			this.app.metadataCache.getFileCache(sourceFile)?.frontmatter ?? {};
 
-		// Resolve target path
 		const targetPath = this.resolveNewNotePath(linkText, sourcePath);
 
-		// Build frontmatter
-		const fm: Record<string, unknown> = {};
+		// Build initial frontmatter: inherited fields + `up`
+		// Inject fields come AFTER Templater so we can apply conflict strategies
+		const baseFm: Record<string, unknown> = {};
 
-		// 1. Fields to always inherit from source
 		for (const field of this.settings.alwaysInherit) {
 			if (sourceMeta[field] !== undefined) {
-				fm[field] = sourceMeta[field];
+				baseFm[field] = sourceMeta[field];
 			}
 		}
 
-		// 2. Rule-specific injected fields
-		for (const [k, v] of Object.entries(rule.inject)) {
-			fm[k] = v;
-		}
-
-		// 3. `up` pointing back to source
 		if (rule.inheritUp) {
-			fm['up'] = `[[${sourceFile.basename}]]`;
+			baseFm['up'] = `[[${sourceFile.basename}]]`;
 		}
 
-		const yaml = stringifyYaml(fm).trimEnd();
+		const yaml = stringifyYaml(baseFm).trimEnd();
 		const content = `---\n${yaml}\n---\n\n# ${linkText}\n`;
 
-		// Create the file
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
-				// Open the file so Templater and Linter can act on it
+			// Open so Templater and Linter can operate on the active file
 			const leaf = this.app.workspace.getLeaf(false);
 			await leaf.openFile(newFile);
 
-			// Apply Templater template if configured
+			// Apply Templater template first — it may set its own frontmatter
 			if (rule.templatePath) {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
 			}
 
-			// Run linter if configured
+			// Now apply inject fields with conflict resolution against whatever
+			// Templater wrote
+			if (rule.inject.length > 0) {
+				await this.applyInjectFields(newFile, rule.inject);
+			}
+
+			// Linter runs last, after all frontmatter is settled
 			if (rule.runLinter) {
 				await this.runLinter();
 			}
@@ -173,14 +153,91 @@ export default class InheritPlugin extends Plugin {
 	}
 
 	/**
-	 * Resolve where to create the new note. Uses Obsidian's "new file location"
-	 * setting so it respects the user's vault defaults.
+	 * Apply inject fields to the file's frontmatter using per-field strategies.
+	 * Reads the current file content (post-Templater), merges, then writes back.
 	 */
+	private async applyInjectFields(
+		file: TFile,
+		fields: InjectField[],
+	): Promise<void> {
+		// Small delay to ensure Templater has finished writing
+		await new Promise((r) => setTimeout(r, 150));
+
+		const raw = await this.app.vault.read(file);
+		const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+		const existingFm: Record<string, unknown> = fmMatch && fmMatch[1]
+			? (parseYaml(fmMatch[1]) as Record<string, unknown>) ?? {}
+			: {};
+		const body = fmMatch ? raw.slice(fmMatch[0].length) : '\n' + raw;
+
+		const merged = { ...existingFm };
+
+		for (const field of fields) {
+			if (!field.key) continue;
+			const existing = merged[field.key];
+			const incoming = this.parseFieldValue(field.value);
+
+			switch (field.strategy) {
+				case 'overwrite':
+					merged[field.key] = incoming;
+					break;
+
+				case 'keep':
+					// Only set if not already present
+					if (existing === undefined || existing === null || existing === '') {
+						merged[field.key] = incoming;
+					}
+					break;
+
+				case 'merge':
+					if (Array.isArray(existing) && Array.isArray(incoming)) {
+						// Combine arrays, deduplicate
+						merged[field.key] = [
+							...new Set([...existing, ...incoming]),
+						];
+					} else if (Array.isArray(existing)) {
+						// Add scalar incoming into existing array
+						const arr = [...existing];
+						if (!arr.includes(incoming)) arr.push(incoming);
+						merged[field.key] = arr;
+					} else if (Array.isArray(incoming)) {
+						// Incoming is array, existing is scalar — prepend existing
+						const arr = [...incoming];
+						if (existing !== undefined && !arr.includes(existing)) {
+							arr.unshift(existing);
+						}
+						merged[field.key] = arr;
+					} else {
+						// Both scalars — treat as overwrite
+						merged[field.key] = incoming;
+					}
+					break;
+			}
+		}
+
+		const newYaml = stringifyYaml(merged).trimEnd();
+		await this.app.vault.modify(file, `---\n${newYaml}\n---${body}`);
+	}
+
+	/**
+	 * Try to parse a field value string as YAML so arrays like "[a, b]"
+	 * and booleans/numbers work correctly. Falls back to raw string.
+	 */
+	private parseFieldValue(value: string): unknown {
+		try {
+			const parsed = parseYaml(value);
+			// parseYaml returns the input string if it can't parse — avoid that
+			return parsed !== value ? parsed : value;
+		} catch {
+			return value;
+		}
+	}
+
+	// ─── Path resolution ──────────────────────────────────────────────────────
+
 	private resolveNewNotePath(linkText: string, sourcePath: string): string {
-		// Strip any alias (e.g. [[John Smith|John]])
 		const name = (linkText.split('|')[0] ?? linkText).trim();
 
-		// Use Obsidian's attachment/new-file folder config if available
 		const config = (this.app.vault as any).config as {
 			newFileLocation?: string;
 			newFileFolderPath?: string;
@@ -193,17 +250,13 @@ export default class InheritPlugin extends Plugin {
 			const dir = sourcePath.substring(0, sourcePath.lastIndexOf('/'));
 			return dir ? `${dir}/${name}.md` : `${name}.md`;
 		}
-		// default: vault root
 		return `${name}.md`;
 	}
 
-	/**
-	 * Run Obsidian Linter on the currently active file.
-	 * Fails silently if Linter is not installed.
-	 */
+	// ─── Linter ───────────────────────────────────────────────────────────────
+
 	private async runLinter(): Promise<void> {
 		try {
-			// Small delay so Templater (if any) has finished writing
 			await new Promise((r) => setTimeout(r, 100));
 			(this.app as any).commands.executeCommandById(
 				'obsidian-linter:lint-file',
@@ -213,25 +266,21 @@ export default class InheritPlugin extends Plugin {
 		}
 	}
 
-	/**
-	 * Attempt to apply a Templater template via its exposed API.
-	 * Fails silently if Templater is not installed.
-	 */
+	// ─── Templater ────────────────────────────────────────────────────────────
+
 	private async applyTemplaterTemplate(
 		file: TFile,
 		templatePath: string,
 	): Promise<void> {
-		const templater = (this.app as any).plugins?.plugins?.['templater-obsidian'];
+		const templater =
+			(this.app as any).plugins?.plugins?.['templater-obsidian'];
 		if (!templater) return;
 
-		const templateFile =
-			this.app.vault.getAbstractFileByPath(templatePath);
+		const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
 		if (!(templateFile instanceof TFile)) return;
 
 		try {
-			await templater.templater.append_template_to_active_file(
-				templateFile,
-			);
+			await templater.templater.append_template_to_active_file(templateFile);
 		} catch {
 			// Templater API may vary — fail silently
 		}
@@ -240,11 +289,17 @@ export default class InheritPlugin extends Plugin {
 	// ─── Settings ─────────────────────────────────────────────────────────────
 
 	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<InheritSettings>,
-		);
+		const saved = (await this.loadData()) as Partial<InheritSettings> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+
+		// Migrate old inject format (Record<string,string>) to InjectField[]
+		for (const rule of this.settings.rules) {
+			if (rule.inject && !Array.isArray(rule.inject)) {
+				rule.inject = Object.entries(
+					rule.inject as unknown as Record<string, string>,
+				).map(([key, value]) => ({ key, value, strategy: 'overwrite' as const }));
+			}
+		}
 	}
 
 	async saveSettings() {

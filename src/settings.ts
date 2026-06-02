@@ -1,11 +1,20 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import InheritPlugin from './main';
 
+export type InjectStrategy = 'overwrite' | 'merge' | 'keep';
+
+export interface InjectField {
+	key: string;
+	value: string;
+	/** overwrite: our value always wins | merge: combine arrays, overwrite scalars | keep: only set if template didn't */
+	strategy: InjectStrategy;
+}
+
 export interface FieldRule {
 	/** The frontmatter field to watch (e.g. "person", "location") */
 	field: string;
-	/** Frontmatter key/value pairs to inject into the created note */
-	inject: Record<string, string>;
+	/** Frontmatter fields to inject into the created note */
+	inject: InjectField[];
 	/** Whether to also set `up` to the source note */
 	inheritUp: boolean;
 	/** Optional Templater template path to apply */
@@ -23,6 +32,18 @@ export interface InheritSettings {
 export const DEFAULT_SETTINGS: InheritSettings = {
 	rules: [],
 	alwaysInherit: [],
+};
+
+const STRATEGY_LABELS: Record<InjectStrategy, string> = {
+	overwrite: 'Overwrite',
+	merge: 'Merge',
+	keep: 'Keep if missing',
+};
+
+const STRATEGY_DESCS: Record<InjectStrategy, string> = {
+	overwrite: 'Our value always wins, template value is discarded.',
+	merge: 'Arrays are combined; scalars use our value.',
+	keep: 'Only set if the template did not already set this field.',
 };
 
 export class InheritSettingTab extends PluginSettingTab {
@@ -75,7 +96,7 @@ export class InheritSettingTab extends PluginSettingTab {
 				.onClick(async () => {
 					this.plugin.settings.rules.push({
 						field: '',
-						inject: {},
+						inject: [],
 						inheritUp: true,
 						templatePath: '',
 						runLinter: false,
@@ -92,7 +113,7 @@ export class InheritSettingTab extends PluginSettingTab {
 
 		const ruleEl = containerEl.createDiv({ cls: 'inherit-rule' });
 
-		// ── Header row: field name + remove button ──────────────────────────
+		// ── Header: field name + remove ──────────────────────────────────────
 		const headerEl = ruleEl.createDiv({ cls: 'inherit-rule-header' });
 
 		const fieldInput = headerEl.createEl('input', {
@@ -117,7 +138,7 @@ export class InheritSettingTab extends PluginSettingTab {
 			this.display();
 		});
 
-		// ── Inherit up toggle ────────────────────────────────────────────────
+		// ── Inherit up ───────────────────────────────────────────────────────
 		new Setting(ruleEl)
 			.setName('Inherit up')
 			.setDesc('Set `up` in the new note to point back to the source note.')
@@ -136,64 +157,74 @@ export class InheritSettingTab extends PluginSettingTab {
 		});
 
 		const renderInjectRows = () => {
-			const rowsEl = injectSection.querySelector('.inherit-inject-rows');
-			if (rowsEl) rowsEl.remove();
+			const existing = injectSection.querySelector('.inherit-inject-rows');
+			if (existing) existing.remove();
 
 			const rows = injectSection.createDiv({ cls: 'inherit-inject-rows' });
 
-			const entries = Object.entries(rule.inject);
-
-			if (entries.length === 0) {
+			if (rule.inject.length === 0) {
 				rows.createEl('div', {
 					text: 'No fields — click + to add one.',
 					cls: 'inherit-empty-hint',
 				});
 			}
 
-			for (const [key, val] of entries) {
+			rule.inject.forEach((field, fi) => {
 				const row = rows.createDiv({ cls: 'inherit-inject-row' });
 
+				// Key
 				const keyInput = row.createEl('input', {
 					type: 'text',
 					cls: 'inherit-inject-key',
 					attr: { placeholder: 'key' },
 				});
-				keyInput.value = key;
+				keyInput.value = field.key;
+				keyInput.addEventListener('blur', async () => {
+					field.key = keyInput.value.trim();
+					await this.plugin.saveSettings();
+				});
 
+				// Value
 				const valInput = row.createEl('input', {
 					type: 'text',
 					cls: 'inherit-inject-val',
 					attr: { placeholder: 'value' },
 				});
-				valInput.value = val;
+				valInput.value = field.value;
+				valInput.addEventListener('blur', async () => {
+					field.value = valInput.value;
+					await this.plugin.saveSettings();
+				});
 
+				// Strategy dropdown
+				const stratSelect = row.createEl('select', {
+					cls: 'inherit-inject-strategy',
+					attr: { title: STRATEGY_DESCS[field.strategy] },
+				});
+				for (const [val, label] of Object.entries(STRATEGY_LABELS)) {
+					const opt = stratSelect.createEl('option', {
+						value: val,
+						text: label,
+					});
+					if (val === field.strategy) opt.selected = true;
+				}
+				stratSelect.addEventListener('change', async () => {
+					field.strategy = stratSelect.value as InjectStrategy;
+					stratSelect.title = STRATEGY_DESCS[field.strategy];
+					await this.plugin.saveSettings();
+				});
+
+				// Delete
 				const delBtn = row.createEl('button', {
 					cls: 'inherit-inject-del',
 					text: '✕',
 				});
-
-				// Save on blur so rapid typing doesn't thrash
-				const save = async () => {
-					const newKey = keyInput.value.trim();
-					const newVal = valInput.value;
-					if (!newKey) return;
-					// Rebuild inject without old key, add new key
-					const updated: Record<string, string> = {};
-					for (const [k, v] of Object.entries(rule.inject)) {
-						updated[k === key ? newKey : k] = k === key ? newVal : v;
-					}
-					rule.inject = updated;
-					await this.plugin.saveSettings();
-				};
-				keyInput.addEventListener('blur', save);
-				valInput.addEventListener('blur', save);
-
 				delBtn.addEventListener('click', async () => {
-					delete rule.inject[key];
+					rule.inject.splice(fi, 1);
 					await this.plugin.saveSettings();
 					renderInjectRows();
 				});
-			}
+			});
 
 			// Add row button
 			const addRow = rows.createEl('button', {
@@ -201,11 +232,7 @@ export class InheritSettingTab extends PluginSettingTab {
 				text: '+ Add field',
 			});
 			addRow.addEventListener('click', async () => {
-				// Add a blank entry with a placeholder key
-				let k = 'key';
-				let n = 1;
-				while (rule.inject[k]) k = `key${n++}`;
-				rule.inject[k] = '';
+				rule.inject.push({ key: '', value: '', strategy: 'overwrite' });
 				await this.plugin.saveSettings();
 				renderInjectRows();
 			});
