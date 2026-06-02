@@ -7,24 +7,22 @@ export interface MergedField {
 	key: string;
 	value: unknown;
 	origin: FieldOrigin;
-	strategy?: string; // only set for inject fields
+	strategy?: string;
 }
 
-export interface DryRunResult {
+export interface MergeResult {
 	fields: MergedField[];
+	/** Merged object — use with processFrontMatter for actual writes */
+	merged: Record<string, unknown>;
+	/** YAML string — for dry run display only */
 	yaml: string;
 }
 
 /**
  * Pure merge function — no file I/O.
- * Simulates exactly what createNote + applyInjectFields does.
  *
- * @param sourceFm    Frontmatter of the source note (for always-inherit fields)
- * @param templateFm  Frontmatter that Templater would produce (may be empty)
- * @param injectFields  Rule inject fields with strategies
- * @param alwaysInherit  Global always-inherit field names
- * @param inheritUp   Whether to set `up` pointing to source
- * @param sourceName  Basename of the source note (for `up` value)
+ * Returns both the merged JS object (for use with processFrontMatter)
+ * and a YAML string (for dry run preview display only).
  */
 export function runMerge(
 	sourceFm: Record<string, unknown>,
@@ -33,7 +31,7 @@ export function runMerge(
 	alwaysInherit: string[],
 	inheritUp: boolean,
 	sourceName: string,
-): DryRunResult {
+): MergeResult {
 	const fields: MergedField[] = [];
 	const merged: Record<string, unknown> = {};
 
@@ -43,7 +41,7 @@ export function runMerge(
 		fields.push({ key: k, value: v, origin: 'template' });
 	}
 
-	// 2. Always-inherited fields from source (overwrite template if present)
+	// 2. Always-inherited fields from source
 	for (const field of alwaysInherit) {
 		if (sourceFm[field] !== undefined) {
 			const existing = fields.find((f) => f.key === field);
@@ -57,7 +55,7 @@ export function runMerge(
 		}
 	}
 
-	// 3. `up` field — stored as array for Breadcrumbs compatibility
+	// 3. `up` — stored as array for Breadcrumbs compatibility
 	if (inheritUp) {
 		const upVal = `[[${sourceName}]]`;
 		const existing = fields.find((f) => f.key === 'up');
@@ -75,22 +73,19 @@ export function runMerge(
 		if (!field.key) continue;
 		const incoming = parseFieldValue(field.value);
 		const existing = merged[field.key];
-		const existingFieldEntry = fields.find((f) => f.key === field.key);
+		const existingEntry = fields.find((f) => f.key === field.key);
 
 		let resolved: unknown;
-
 		switch (field.strategy) {
 			case 'overwrite':
 				resolved = incoming;
 				break;
-
 			case 'keep':
 				resolved =
 					existing === undefined || existing === null || existing === ''
 						? incoming
 						: existing;
 				break;
-
 			case 'merge':
 				if (Array.isArray(existing) && Array.isArray(incoming)) {
 					resolved = [...new Set([...existing, ...(incoming as unknown[])])];
@@ -100,43 +95,34 @@ export function runMerge(
 					resolved = arr;
 				} else if (Array.isArray(incoming)) {
 					const arr = [...(incoming as unknown[])];
-					if (existing !== undefined && !arr.includes(existing)) {
+					if (existing !== undefined && !arr.includes(existing))
 						arr.unshift(existing);
-					}
 					resolved = arr;
 				} else {
 					resolved = incoming;
 				}
 				break;
-
 			default:
 				resolved = incoming;
 		}
 
 		merged[field.key] = resolved;
-
-		if (existingFieldEntry) {
-			existingFieldEntry.value = resolved;
-			existingFieldEntry.origin = 'inject';
-			existingFieldEntry.strategy = field.strategy;
+		if (existingEntry) {
+			existingEntry.value = resolved;
+			existingEntry.origin = 'inject';
+			existingEntry.strategy = field.strategy;
 		} else {
-			fields.push({
-				key: field.key,
-				value: resolved,
-				origin: 'inject',
-				strategy: field.strategy,
-			});
+			fields.push({ key: field.key, value: resolved, origin: 'inject', strategy: field.strategy });
 		}
 	}
 
-	// Rebuild yaml from merged (preserves correct ordering)
+	// YAML is only used for dry run display — not for writing to disk.
+	// quoteWikilinks is a best-effort fix for display purposes only.
 	const orderedMerged: Record<string, unknown> = {};
-	for (const f of fields) {
-		orderedMerged[f.key] = f.value;
-	}
+	for (const f of fields) orderedMerged[f.key] = f.value;
 	const yaml = quoteWikilinks(stringifyYaml(orderedMerged).trimEnd());
 
-	return { fields, yaml };
+	return { fields, merged, yaml };
 }
 
 export function parseFieldValue(value: string): unknown {
@@ -149,24 +135,15 @@ export function parseFieldValue(value: string): unknown {
 }
 
 /**
- * Ensure all wikilinks in YAML output use double quotes.
- *
- * js-yaml serializes strings starting with `[` using single quotes
- * (e.g. `'[[person]]'`). Obsidian expects double-quoted wikilinks.
- * Also handles the case where the value is unquoted (shouldn't happen
- * after js-yaml, but defensive).
- *
- * Handles scalar lines:   `key: '[[Note]]'`  →  `key: "[[Note]]"`
- * and list items:         `  - '[[Note]]'`   →  `  - "[[Note]]"`
+ * Best-effort fix for dry run YAML display.
+ * NOT used for actual file writes — processFrontMatter handles that.
  */
 export function quoteWikilinks(yaml: string): string {
 	return yaml
-		// Single-quoted wikilinks → double-quoted
 		.replace(
 			/^(\s*(?:[\w-][\w\s-]*:\s*|-\s+))'(\[\[.+?\]\])'(\s*)$/gm,
 			'$1"$2"$3',
 		)
-		// Bare unquoted wikilinks → double-quoted
 		.replace(
 			/^(\s*(?:[\w-][\w\s-]*:\s*|-\s+))(?!['"])(\[\[.+?\]\])(\s*)$/gm,
 			'$1"$2"$3',

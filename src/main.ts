@@ -5,7 +5,7 @@ import {
 	InheritSettings,
 	InheritSettingTab,
 } from './settings';
-import { runMerge, parseFrontmatterString } from './merge';
+import { runMerge } from './merge';
 
 export default class InheritPlugin extends Plugin {
 	settings!: InheritSettings;
@@ -208,28 +208,31 @@ export default class InheritPlugin extends Plugin {
 		sourceBasename: string,
 		rule: FieldRule,
 	): Promise<void> {
+		// Small delay so Templater has finished writing if it ran
 		await new Promise((r) => setTimeout(r, 150));
 
-		const raw = await this.app.vault.read(file);
+		// processFrontMatter is Obsidian's official API for frontmatter writes.
+		// It handles all YAML serialization internally — no stringifyYaml needed.
+		await (this.app as any).fileManager.processFrontMatter(
+			file,
+			(currentFm: Record<string, unknown>) => {
+				// currentFm is whatever Templater wrote (or empty if no template)
+				const { merged } = runMerge(
+					sourceFm,
+					currentFm,
+					rule.inject,
+					this.settings.alwaysInherit,
+					rule.inheritUp,
+					sourceBasename,
+				);
 
-		// Match an existing frontmatter block if Templater wrote one
-		const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-		const templateFm = parseFrontmatterString(fmMatch?.[1] ?? '');
-		// Everything after the frontmatter block (or the full content if none)
-		const body = fmMatch
-			? raw.slice(fmMatch[0].length).replace(/^\n*/, '\n\n')
-			: '\n\n' + raw.replace(/^\n*/, '');
-
-		const { yaml } = runMerge(
-			sourceFm,
-			templateFm,
-			rule.inject,
-			this.settings.alwaysInherit,
-			rule.inheritUp,
-			sourceBasename,
+				// Apply merged fields onto currentFm in-place
+				// (processFrontMatter writes currentFm back to disk)
+				for (const [k, v] of Object.entries(merged)) {
+					currentFm[k] = v;
+				}
+			},
 		);
-
-		await this.app.vault.modify(file, `---\n${yaml}\n---${body}`);
 	}
 
 	// ─── Path resolution ──────────────────────────────────────────────────────
