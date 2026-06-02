@@ -127,6 +127,12 @@ export function runMerge(
 }
 
 export function parseFieldValue(value: string): unknown {
+	// Wikilinks start with [[ — parseYaml interprets [[ as a nested YAML
+	// flow sequence, producing [["note"]] instead of the string "[[note]]".
+	// Always treat wikilinks as literal strings.
+	if (/^\[\[.+\]\]$/.test(value.trim())) {
+		return value.trim();
+	}
 	try {
 		const parsed = parseYaml(value);
 		return parsed !== value ? parsed : value;

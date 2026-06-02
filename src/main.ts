@@ -228,13 +228,14 @@ export default class InheritPlugin extends Plugin {
 				sourceBasename,
 			);
 
+			new Notice(`[Inherit debug] up=${JSON.stringify(merged['up'])} inheritUp=${rule.inheritUp} src=${sourceBasename} currentFm.up=${JSON.stringify(currentFm['up'])}`, 10000);
+
 			const yaml = serializeFrontmatter(merged);
 			return `---\n${yaml}\n---\n\n${body}`;
 		};
 
 		// First write
 		const content = await writeAndFix();
-		new Notice(`[Inherit] writing up: ${(content.match(/^up:.*/m)?.[0] ?? 'not found')}`, 5000);
 
 		// Track our own writes so we don't react to them
 		let ownWriteCount = 0;
