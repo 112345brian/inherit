@@ -183,15 +183,22 @@ export default class InheritPlugin extends Plugin {
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
+			// Open the file so Templater and Linter can run against it
+			const leaf = this.app.workspace.getLeaf(false);
+			await leaf.openFile(newFile, { state: { mode: 'source' } });
+
 			if (rule.templatePath) {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
 			}
 
-			await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
-
 			if (rule.runLinter) {
 				await this.runLinter();
 			}
+
+			// Wait for Linter (and any other plugins) to finish writing,
+			// then apply our frontmatter fields last so they always win
+			await new Promise((r) => setTimeout(r, 400));
+			await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
 
 			new Notice(`Created: ${linkText}`);
 		} catch (err) {
@@ -205,61 +212,24 @@ export default class InheritPlugin extends Plugin {
 		sourceBasename: string,
 		rule: FieldRule,
 	): Promise<void> {
-		// Wait for Linter / other plugins to run on file open first
-		await new Promise((r) => setTimeout(r, 600));
+		const raw = await this.app.vault.read(file);
+		const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+		const currentFm = parseFrontmatterString(fmMatch?.[1] ?? '');
+		const body = fmMatch
+			? raw.slice(fmMatch[0].length).trimStart()
+			: raw.trimStart();
 
-		const writeAndFix = async () => {
-			const raw = await this.app.vault.read(file);
-			const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-			const currentFm = parseFrontmatterString(fmMatch?.[1] ?? '');
-			const body = fmMatch
-				? raw.slice(fmMatch[0].length).trimStart()
-				: raw.trimStart();
+		const { merged } = runMerge(
+			sourceFm,
+			currentFm,
+			rule.inject,
+			this.settings.alwaysInherit,
+			rule.inheritUp,
+			sourceBasename,
+		);
 
-			const { merged } = runMerge(
-				sourceFm,
-				currentFm,
-				rule.inject,
-				this.settings.alwaysInherit,
-				rule.inheritUp,
-				sourceBasename,
-			);
-
-			const yaml = serializeFrontmatter(merged);
-			return `---\n${yaml}\n---\n\n${body}`;
-		};
-
-		// First write
-		const content = await writeAndFix();
-
-		// Track our own writes so we don't react to them
-		let ownWriteCount = 0;
-		let reapplied = false;
-
-		const ref = (this.app.vault as any).on('modify', async (modified: TFile) => {
-			if (modified.path !== file.path) return;
-			if (ownWriteCount > 0) {
-				// This event is from our own vault.modify — skip it
-				ownWriteCount--;
-				return;
-			}
-			if (reapplied) return;
-
-			// An external plugin (Linter) modified the file after us.
-			// Re-apply our fix one final time.
-			reapplied = true;
-			this.app.vault.offref(ref);
-			await new Promise((r) => setTimeout(r, 200));
-			const fixed = await writeAndFix();
-			ownWriteCount++;
-			await this.app.vault.modify(file, fixed);
-		});
-
-		// Cleanup after 5s
-		setTimeout(() => this.app.vault.offref(ref), 5000);
-
-		ownWriteCount++;
-		await this.app.vault.modify(file, content);
+		const yaml = serializeFrontmatter(merged);
+		await this.app.vault.modify(file, `---\n${yaml}\n---\n\n${body}`);
 	}
 
 	// ─── Path resolution ──────────────────────────────────────────────────────
