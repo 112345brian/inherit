@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import InheritPlugin from './main';
+import { runMerge, parseFrontmatterString } from './merge';
 
 export type InjectStrategy = 'overwrite' | 'merge' | 'keep';
 
@@ -264,5 +265,132 @@ export class InheritSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}),
 			);
+
+		// ── Dry run ──────────────────────────────────────────────────────────
+		this.renderDryRun(ruleEl, index);
+	}
+
+	private renderDryRun(ruleEl: HTMLElement, index: number): void {
+		const rule = this.plugin.settings.rules[index];
+		if (!rule) return;
+
+		const section = ruleEl.createDiv({ cls: 'inherit-dryrun' });
+
+		// Collapsible toggle
+		const header = section.createEl('button', {
+			cls: 'inherit-dryrun-header',
+			text: '▶ Dry run preview',
+		});
+		const body = section.createDiv({ cls: 'inherit-dryrun-body' });
+		body.style.display = 'none';
+
+		header.addEventListener('click', () => {
+			const open = body.style.display !== 'none';
+			body.style.display = open ? 'none' : 'block';
+			header.setText((open ? '▶' : '▼') + ' Dry run preview');
+		});
+
+		// Source note frontmatter input
+		body.createEl('div', {
+			text: 'Simulated source note frontmatter',
+			cls: 'inherit-section-label',
+		});
+		body.createEl('div', {
+			text: 'Paste YAML as it would appear in the source note (the one containing the link).',
+			cls: 'inherit-dryrun-hint',
+		});
+		const sourceInput = body.createEl('textarea', {
+			cls: 'inherit-dryrun-textarea',
+			attr: { placeholder: 'tags:\n  - research\ncourse: "[[My Course]]"', spellcheck: 'false' },
+		});
+
+		// Template frontmatter input
+		body.createEl('div', {
+			text: 'Simulated Templater output frontmatter',
+			cls: 'inherit-section-label',
+		});
+		body.createEl('div', {
+			text: 'Paste YAML as your Templater template would produce it.',
+			cls: 'inherit-dryrun-hint',
+		});
+		const templateInput = body.createEl('textarea', {
+			cls: 'inherit-dryrun-textarea',
+			attr: { placeholder: 'type: person\ntags:\n  - person', spellcheck: 'false' },
+		});
+
+		// Source name input
+		const sourceNameRow = body.createDiv({ cls: 'inherit-dryrun-row' });
+		sourceNameRow.createEl('span', { text: 'Source note name:', cls: 'inherit-dryrun-label' });
+		const sourceNameInput = sourceNameRow.createEl('input', {
+			type: 'text',
+			cls: 'inherit-dryrun-name',
+			attr: { placeholder: 'My Research Note' },
+		});
+
+		// Run button
+		const runBtn = body.createEl('button', {
+			cls: 'inherit-dryrun-run',
+			text: 'Run preview',
+		});
+
+		// Output
+		const output = body.createDiv({ cls: 'inherit-dryrun-output' });
+		output.style.display = 'none';
+
+		runBtn.addEventListener('click', () => {
+			const sourceFm = parseFrontmatterString(sourceInput.value);
+			const templateFm = parseFrontmatterString(templateInput.value);
+			const sourceName = sourceNameInput.value.trim() || 'Source Note';
+
+			const { fields, yaml } = runMerge(
+				sourceFm,
+				templateFm,
+				rule.inject,
+				this.plugin.settings.alwaysInherit,
+				rule.inheritUp,
+				sourceName,
+			);
+
+			output.empty();
+			output.style.display = 'block';
+
+			// Annotated field list
+			const table = output.createEl('table', { cls: 'inherit-dryrun-table' });
+			const thead = table.createEl('thead');
+			const hr = thead.createEl('tr');
+			hr.createEl('th', { text: 'Field' });
+			hr.createEl('th', { text: 'Value' });
+			hr.createEl('th', { text: 'Source' });
+
+			const tbody = table.createEl('tbody');
+			for (const f of fields) {
+				const tr = tbody.createEl('tr');
+				tr.createEl('td', {
+					text: f.key,
+					cls: 'inherit-dryrun-key',
+				});
+				tr.createEl('td', {
+					text: JSON.stringify(f.value),
+					cls: 'inherit-dryrun-val',
+				});
+				const badge = tr.createEl('td');
+				badge.createEl('span', {
+					text: f.strategy
+						? `inject · ${f.strategy}`
+						: f.origin,
+					cls: `inherit-badge inherit-badge-${f.origin}`,
+				});
+			}
+
+			// Final YAML block
+			output.createEl('div', {
+				text: 'Resulting frontmatter',
+				cls: 'inherit-section-label',
+			});
+			output.createEl('pre', {
+				text: `---\n${yaml}\n---`,
+				cls: 'inherit-dryrun-yaml',
+			});
+		});
 	}
 }

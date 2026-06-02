@@ -1,11 +1,11 @@
-import { Notice, Plugin, TFile, parseYaml, stringifyYaml } from 'obsidian';
+import { Notice, Plugin, TFile, stringifyYaml } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
 	FieldRule,
-	InjectField,
 	InheritSettings,
 	InheritSettingTab,
 } from './settings';
+import { runMerge, parseFrontmatterString } from './merge';
 
 export default class InheritPlugin extends Plugin {
 	settings!: InheritSettings;
@@ -106,22 +106,9 @@ export default class InheritPlugin extends Plugin {
 
 		const targetPath = this.resolveNewNotePath(linkText, sourcePath);
 
-		// Build initial frontmatter: inherited fields + `up`
-		// Inject fields come AFTER Templater so we can apply conflict strategies
-		const baseFm: Record<string, unknown> = {};
-
-		for (const field of this.settings.alwaysInherit) {
-			if (sourceMeta[field] !== undefined) {
-				baseFm[field] = sourceMeta[field];
-			}
-		}
-
-		if (rule.inheritUp) {
-			baseFm['up'] = `[[${sourceFile.basename}]]`;
-		}
-
-		const yaml = stringifyYaml(baseFm).trimEnd();
-		const content = `---\n${yaml}\n---\n\n# ${linkText}\n`;
+		// Start with a minimal stub — inject fields + inherited fields are
+		// applied after Templater runs via applyInjectFields/runMerge
+		const content = `---\n---\n\n# ${linkText}\n`;
 
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
@@ -138,7 +125,7 @@ export default class InheritPlugin extends Plugin {
 			// Now apply inject fields with conflict resolution against whatever
 			// Templater wrote
 			if (rule.inject.length > 0) {
-				await this.applyInjectFields(newFile, rule.inject);
+				await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
 			}
 
 			// Linter runs last, after all frontmatter is settled
@@ -154,83 +141,32 @@ export default class InheritPlugin extends Plugin {
 
 	/**
 	 * Apply inject fields to the file's frontmatter using per-field strategies.
-	 * Reads the current file content (post-Templater), merges, then writes back.
+	 * Reads the current file content (post-Templater), merges via runMerge,
+	 * then writes back.
 	 */
 	private async applyInjectFields(
 		file: TFile,
-		fields: InjectField[],
+		sourceFm: Record<string, unknown>,
+		sourceBasename: string,
+		rule: FieldRule,
 	): Promise<void> {
-		// Small delay to ensure Templater has finished writing
 		await new Promise((r) => setTimeout(r, 150));
 
 		const raw = await this.app.vault.read(file);
 		const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
-		const existingFm: Record<string, unknown> = fmMatch && fmMatch[1]
-			? (parseYaml(fmMatch[1]) as Record<string, unknown>) ?? {}
-			: {};
+		const templateFm = parseFrontmatterString(fmMatch?.[1] ?? '');
 		const body = fmMatch ? raw.slice(fmMatch[0].length) : '\n' + raw;
 
-		const merged = { ...existingFm };
+		const { yaml } = runMerge(
+			sourceFm,
+			templateFm,
+			rule.inject,
+			this.settings.alwaysInherit,
+			rule.inheritUp,
+			sourceBasename,
+		);
 
-		for (const field of fields) {
-			if (!field.key) continue;
-			const existing = merged[field.key];
-			const incoming = this.parseFieldValue(field.value);
-
-			switch (field.strategy) {
-				case 'overwrite':
-					merged[field.key] = incoming;
-					break;
-
-				case 'keep':
-					// Only set if not already present
-					if (existing === undefined || existing === null || existing === '') {
-						merged[field.key] = incoming;
-					}
-					break;
-
-				case 'merge':
-					if (Array.isArray(existing) && Array.isArray(incoming)) {
-						// Combine arrays, deduplicate
-						merged[field.key] = [
-							...new Set([...existing, ...incoming]),
-						];
-					} else if (Array.isArray(existing)) {
-						// Add scalar incoming into existing array
-						const arr = [...existing];
-						if (!arr.includes(incoming)) arr.push(incoming);
-						merged[field.key] = arr;
-					} else if (Array.isArray(incoming)) {
-						// Incoming is array, existing is scalar — prepend existing
-						const arr = [...incoming];
-						if (existing !== undefined && !arr.includes(existing)) {
-							arr.unshift(existing);
-						}
-						merged[field.key] = arr;
-					} else {
-						// Both scalars — treat as overwrite
-						merged[field.key] = incoming;
-					}
-					break;
-			}
-		}
-
-		const newYaml = stringifyYaml(merged).trimEnd();
-		await this.app.vault.modify(file, `---\n${newYaml}\n---${body}`);
-	}
-
-	/**
-	 * Try to parse a field value string as YAML so arrays like "[a, b]"
-	 * and booleans/numbers work correctly. Falls back to raw string.
-	 */
-	private parseFieldValue(value: string): unknown {
-		try {
-			const parsed = parseYaml(value);
-			// parseYaml returns the input string if it can't parse — avoid that
-			return parsed !== value ? parsed : value;
-		} catch {
-			return value;
-		}
+		await this.app.vault.modify(file, `---\n${yaml}\n---${body}`);
 	}
 
 	// ─── Path resolution ──────────────────────────────────────────────────────
