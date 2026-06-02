@@ -183,23 +183,21 @@ export default class InheritPlugin extends Plugin {
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
-			// Open the file so Templater and Linter have an active file to work on
-			const leaf = this.app.workspace.getLeaf(false);
-			await leaf.openFile(newFile, { state: { mode: 'source' } });
-
-			// Let the view settle before running plugins
-			await new Promise((r) => setTimeout(r, 150));
-
+			// 1. Templater — needs the file to be active
 			if (rule.templatePath) {
+				const leaf = this.app.workspace.getLeaf(false);
+				await leaf.openFile(newFile, { state: { mode: 'source' } });
+				await new Promise((r) => setTimeout(r, 150));
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
+				// Navigate back so the note doesn't stay open
+				await this.app.workspace.getLeaf(false).openFile(sourceFile);
 			}
 
-			// Run Linter — executeCommandById doesn't await completion,
-			// so we wait long enough for it to finish writing
-			await this.runLinter();
-			await new Promise((r) => setTimeout(r, 800));
+			// 2. Linter — use internal API directly on the file (no need to open)
+			await this.runLinter(newFile);
+			await new Promise((r) => setTimeout(r, 600));
 
-			// Apply our fields last so they always win over Linter's output
+			// 3. Our fields last — reads whatever Templater+Linter wrote
 			await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
 
 			new Notice(`Created: ${linkText}`);
@@ -256,14 +254,14 @@ export default class InheritPlugin extends Plugin {
 
 	// ─── Linter ───────────────────────────────────────────────────────────────
 
-	private async runLinter(): Promise<void> {
+	private async runLinter(file: TFile): Promise<void> {
 		try {
-			await new Promise((r) => setTimeout(r, 100));
-			(this.app as any).commands.executeCommandById(
-				'obsidian-linter:lint-file',
-			);
+			const linter = (this.app as any).plugins?.plugins?.['obsidian-linter'];
+			if (!linter) return;
+			// runLinterFile works directly on a file without it being active
+			await linter.runLinterFile(file);
 		} catch {
-			// not installed — ignore
+			// Linter not installed or API changed — ignore
 		}
 	}
 
