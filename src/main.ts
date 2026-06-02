@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, stringifyYaml } from 'obsidian';
+import { MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
 	FieldRule,
@@ -9,26 +9,54 @@ import { runMerge, parseFrontmatterString } from './merge';
 
 export default class InheritPlugin extends Plugin {
 	settings!: InheritSettings;
+	private observer: MutationObserver | null = null;
 
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new InheritSettingTab(this.app, this));
-		this.registerMarkdownPostProcessor(this.postProcessor.bind(this));
+
+		// Attach buttons whenever the active leaf changes or layout updates
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', () => this.refreshButtons()),
+		);
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => this.refreshButtons()),
+		);
+		// Re-run when metadata changes (e.g. user adds a new link)
+		this.registerEvent(
+			this.app.metadataCache.on('changed', () => this.refreshButtons()),
+		);
+
+		// MutationObserver catches the properties panel rendering after the view
+		// has loaded — it often renders slightly after layout-change fires
+		this.observer = new MutationObserver(() => this.refreshButtons());
+		this.observer.observe(document.body, { childList: true, subtree: true });
+
+		// Run once on load in case a note is already open
+		this.app.workspace.onLayoutReady(() => this.refreshButtons());
 	}
 
-	onunload() {}
+	onunload() {
+		this.observer?.disconnect();
+	}
 
-	// ─── Post processor ───────────────────────────────────────────────────────
+	// ─── Button refresh ───────────────────────────────────────────────────────
 
-	private postProcessor(el: HTMLElement, ctx: { sourcePath: string }) {
-		const propertiesEl = el.querySelector('.metadata-container');
-		if (!propertiesEl) return;
-		this.attachButtons(propertiesEl as HTMLElement, ctx.sourcePath);
+	private refreshButtons() {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!view || !view.file) return;
+
+		// The properties panel lives inside the view's container, not the
+		// rendered markdown — query the full containerEl directly
+		const container = view.containerEl.querySelector('.metadata-container');
+		if (!container) return;
+
+		this.attachButtons(container as HTMLElement, view.file.path);
 	}
 
 	// ─── Button attachment ────────────────────────────────────────────────────
 
-	attachButtons(container: HTMLElement, sourcePath: string) {
+	private attachButtons(container: HTMLElement, sourcePath: string) {
 		const watchedFields = new Set(
 			this.settings.rules.map((r) => r.field.toLowerCase()),
 		);
@@ -44,44 +72,86 @@ export default class InheritPlugin extends Plugin {
 			);
 			if (!rule) return;
 
-			const links = row.querySelectorAll('a.internal-link');
-			links.forEach((link) => {
+			// Properties panel can render links as:
+			//   a.internal-link               (text/link type fields)
+			//   .multi-select-pill            (list type — link text is the content)
+			// Try both
+			const anchors = Array.from(row.querySelectorAll('a.internal-link'));
+			const pills = Array.from(
+				row.querySelectorAll('.multi-select-pill:not(:has(.inherit-create-btn))'),
+			);
+
+			// Handle anchor links
+			for (const link of anchors) {
 				const anchor = link as HTMLAnchorElement;
+				if (anchor.querySelector('.inherit-create-btn')) continue;
 				const linkText =
 					anchor.getAttribute('data-href') ||
 					anchor.textContent?.trim() ||
 					'';
-				if (!linkText) return;
-				if (anchor.parentElement?.querySelector('.inherit-create-btn')) return;
+				if (!linkText) continue;
+				if (!this.isUnresolved(linkText, sourcePath)) continue;
+				this.attachButtonToAnchor(anchor, linkText, sourcePath, rule);
+			}
 
-				const resolved = this.app.metadataCache.getFirstLinkpathDest(
-					linkText,
-					sourcePath,
-				);
-				if (!resolved) {
-					this.attachButton(anchor, linkText, sourcePath, rule);
-				}
-			});
+			// Handle list-type pills (e.g. people: [[mama-yo]])
+			for (const pill of pills) {
+				if (pill.querySelector('.inherit-create-btn')) continue;
+				// The pill may contain an anchor or just text
+				const anchor = pill.querySelector('a.internal-link') as HTMLAnchorElement | null;
+				const linkText = anchor
+					? (anchor.getAttribute('data-href') || anchor.textContent?.trim() || '')
+					: (pill.querySelector('.multi-select-pill-content')?.textContent?.trim() || '');
+				if (!linkText) continue;
+				if (!this.isUnresolved(linkText, sourcePath)) continue;
+				this.attachButtonToPill(pill as HTMLElement, linkText, sourcePath, rule);
+			}
 		});
 	}
 
-	private attachButton(
+	private isUnresolved(linkText: string, sourcePath: string): boolean {
+		return !this.app.metadataCache.getFirstLinkpathDest(linkText, sourcePath);
+	}
+
+	private attachButtonToAnchor(
 		anchor: HTMLAnchorElement,
 		linkText: string,
 		sourcePath: string,
 		rule: FieldRule,
 	) {
 		const wrapper = anchor.parentElement!;
-		wrapper.style.position = 'relative';
 		wrapper.style.display = 'inline-flex';
 		wrapper.style.alignItems = 'center';
 		wrapper.style.gap = '4px';
+		this.createBtn(wrapper, linkText, sourcePath, rule);
+	}
 
-		const btn = wrapper.createEl('button', {
-			cls: 'inherit-create-btn',
-			attr: { 'aria-label': `Create note: ${linkText}` },
-		});
-		btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`;
+	private attachButtonToPill(
+		pill: HTMLElement,
+		linkText: string,
+		sourcePath: string,
+		rule: FieldRule,
+	) {
+		// Insert before the existing × delete button if present
+		const deleteBtn = pill.querySelector('.multi-select-pill-remove-button');
+		const btn = this.createBtn(null, linkText, sourcePath, rule);
+		if (deleteBtn) {
+			pill.insertBefore(btn, deleteBtn);
+		} else {
+			pill.appendChild(btn);
+		}
+	}
+
+	private createBtn(
+		parent: HTMLElement | null,
+		linkText: string,
+		sourcePath: string,
+		rule: FieldRule,
+	): HTMLButtonElement {
+		const btn = document.createElement('button');
+		btn.className = 'inherit-create-btn';
+		btn.setAttribute('aria-label', `Create note: ${linkText}`);
+		btn.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`;
 
 		btn.addEventListener('click', async (e) => {
 			e.preventDefault();
@@ -89,6 +159,9 @@ export default class InheritPlugin extends Plugin {
 			await this.createNote(linkText, sourcePath, rule);
 			btn.remove();
 		});
+
+		if (parent) parent.appendChild(btn);
+		return btn;
 	}
 
 	// ─── Note creation ────────────────────────────────────────────────────────
@@ -105,30 +178,20 @@ export default class InheritPlugin extends Plugin {
 			this.app.metadataCache.getFileCache(sourceFile)?.frontmatter ?? {};
 
 		const targetPath = this.resolveNewNotePath(linkText, sourcePath);
-
-		// Start with a minimal stub — inject fields + inherited fields are
-		// applied after Templater runs via applyInjectFields/runMerge
 		const content = `---\n---\n\n# ${linkText}\n`;
 
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
-			// Open so Templater and Linter can operate on the active file
 			const leaf = this.app.workspace.getLeaf(false);
 			await leaf.openFile(newFile);
 
-			// Apply Templater template first — it may set its own frontmatter
 			if (rule.templatePath) {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
 			}
 
-			// Now apply inject fields with conflict resolution against whatever
-			// Templater wrote
-			if (rule.inject.length > 0) {
-				await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
-			}
+			await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
 
-			// Linter runs last, after all frontmatter is settled
 			if (rule.runLinter) {
 				await this.runLinter();
 			}
@@ -139,11 +202,6 @@ export default class InheritPlugin extends Plugin {
 		}
 	}
 
-	/**
-	 * Apply inject fields to the file's frontmatter using per-field strategies.
-	 * Reads the current file content (post-Templater), merges via runMerge,
-	 * then writes back.
-	 */
 	private async applyInjectFields(
 		file: TFile,
 		sourceFm: Record<string, unknown>,
@@ -198,7 +256,7 @@ export default class InheritPlugin extends Plugin {
 				'obsidian-linter:lint-file',
 			);
 		} catch {
-			// Linter not installed — ignore
+			// not installed — ignore
 		}
 	}
 
@@ -218,7 +276,7 @@ export default class InheritPlugin extends Plugin {
 		try {
 			await templater.templater.append_template_to_active_file(templateFile);
 		} catch {
-			// Templater API may vary — fail silently
+			// Templater API may vary — ignore
 		}
 	}
 
@@ -228,12 +286,15 @@ export default class InheritPlugin extends Plugin {
 		const saved = (await this.loadData()) as Partial<InheritSettings> | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
 
-		// Migrate old inject format (Record<string,string>) to InjectField[]
 		for (const rule of this.settings.rules) {
 			if (rule.inject && !Array.isArray(rule.inject)) {
 				rule.inject = Object.entries(
 					rule.inject as unknown as Record<string, string>,
-				).map(([key, value]) => ({ key, value, strategy: 'overwrite' as const }));
+				).map(([key, value]) => ({
+					key,
+					value,
+					strategy: 'overwrite' as const,
+				}));
 			}
 		}
 	}
