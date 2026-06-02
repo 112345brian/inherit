@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "inherit",
+	"name": "Inherit",
 	"version": "1.0.0",
 	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Create notes from frontmatter links with inherited context.",
+	"author": "112345brian",
+	"authorUrl": "https://github.com/112345brian",
 	"isDesktopOnly": false
 }
