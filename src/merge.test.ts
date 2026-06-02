@@ -1,36 +1,77 @@
 import { runMerge } from './merge';
 
-// Minimal Obsidian shims for the test environment
-(globalThis as any).parseYaml = (s: string) => {
-	// Very small YAML parser sufficient for test assertions
-	// eslint-disable-next-line @typescript-eslint/no-var-requires
-	return require('js-yaml').load(s);
-};
-(globalThis as any).stringifyYaml = (obj: unknown) => {
-	// eslint-disable-next-line @typescript-eslint/no-var-requires
-	return require('js-yaml').dump(obj);
-};
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const yaml = require('js-yaml');
 
-// ─── The contract ─────────────────────────────────────────────────────────────
+// Obsidian shims
+(globalThis as any).parseYaml = (s: string) => yaml.load(s);
+(globalThis as any).stringifyYaml = (obj: unknown) => yaml.dump(obj);
 
-test('basic note creation with inheritUp produces quoted wikilink', () => {
-	const { merged } = runMerge(
-		{},        // sourceFm
-		{},        // templateFm (nothing from Templater)
-		[],        // inject fields
-		[],        // alwaysInherit
-		true,      // inheritUp
-		'person',  // sourceName
-	);
+// ─── Simulate processFrontMatter ──────────────────────────────────────────────
+//
+// processFrontMatter:
+//   1. Parses the file's current frontmatter into a JS object (currentFm)
+//   2. Calls our callback with currentFm — we mutate it
+//   3. Serializes currentFm back to YAML with js-yaml and writes to disk
+//
+// This function simulates steps 1-3 so we can assert the final file content.
 
-	// up should be a scalar string — processFrontMatter quotes scalar
-	// wikilinks correctly; arrays with wikilinks are not quoted
-	expect(merged['up']).toBe('[[person]]');
-	expect(merged['up']).not.toEqual(expect.arrayContaining([expect.anything()]));
+function simulateProcessFrontMatter(
+	existingFmYaml: string,
+	callback: (fm: Record<string, unknown>) => void,
+): string {
+	// Step 1: parse existing frontmatter (empty object if none)
+	const fm: Record<string, unknown> =
+		existingFmYaml.trim()
+			? (yaml.load(existingFmYaml) as Record<string, unknown>) ?? {}
+			: {};
+
+	// Step 2: our callback mutates fm
+	callback(fm);
+
+	// Step 3: serialize back — this is exactly what Obsidian does
+	const serialized: string = yaml.dump(fm);
+	return `---\n${serialized}---`;
+}
+
+// ─── Contract tests ───────────────────────────────────────────────────────────
+
+test('full pipeline: up wikilink is valid YAML and round-trips correctly', () => {
+	const { merged } = runMerge({}, {}, [], [], true, 'person');
+
+	const fileContent = simulateProcessFrontMatter('', (fm) => {
+		for (const [k, v] of Object.entries(merged)) fm[k] = v;
+	});
+
+	// Must not produce the broken nested-sequence form
+	expect(fileContent).not.toContain('- - ');
+	expect(fileContent).not.toContain('- - person');
+
+	// Parse back — round-trip must give us the wikilink string
+	const fmBlock = fileContent.match(/^---\n([\s\S]*?)---/)?.[1] ?? '';
+	const parsed = yaml.load(fmBlock) as Record<string, unknown>;
+	expect(parsed['up']).toBe('[[person]]');
 });
 
-test('inject field with overwrite wins over template', () => {
-	const { yaml } = runMerge(
+test('full pipeline: final file content matches expected', () => {
+	const { merged } = runMerge({}, {}, [], [], true, 'person');
+
+	const frontmatter = simulateProcessFrontMatter('', (fm) => {
+		for (const [k, v] of Object.entries(merged)) fm[k] = v;
+	});
+
+	const file = `${frontmatter}\n\n# mama-yo\n`;
+
+	// Parse the frontmatter out and check up
+	const fmBlock = file.match(/^---\n([\s\S]*?)---/)?.[1] ?? '';
+	const parsed = yaml.load(fmBlock) as Record<string, unknown>;
+	expect(parsed['up']).toBe('[[person]]');
+	expect(file).toContain('# mama-yo');
+	expect(file).not.toContain('- - ');
+});
+
+test('inject overwrite wins over template', () => {
+	const { merged } = runMerge(
 		{},
 		{ type: 'thing' },
 		[{ key: 'type', value: 'person', strategy: 'overwrite' }],
@@ -38,12 +79,11 @@ test('inject field with overwrite wins over template', () => {
 		false,
 		'source',
 	);
-	expect(yaml).toContain('type: person');
-	expect(yaml).not.toContain('thing');
+	expect(merged['type']).toBe('person');
 });
 
-test('inject field with keep does not overwrite template value', () => {
-	const { yaml } = runMerge(
+test('inject keep does not overwrite template value', () => {
+	const { merged } = runMerge(
 		{},
 		{ type: 'thing' },
 		[{ key: 'type', value: 'person', strategy: 'keep' }],
@@ -51,12 +91,11 @@ test('inject field with keep does not overwrite template value', () => {
 		false,
 		'source',
 	);
-	expect(yaml).toContain('type: thing');
-	expect(yaml).not.toContain('person');
+	expect(merged['type']).toBe('thing');
 });
 
-test('inject field with merge combines arrays', () => {
-	const { yaml } = runMerge(
+test('inject merge combines arrays', () => {
+	const { merged } = runMerge(
 		{},
 		{ tags: ['academic'] },
 		[{ key: 'tags', value: '[research]', strategy: 'merge' }],
@@ -64,12 +103,13 @@ test('inject field with merge combines arrays', () => {
 		false,
 		'source',
 	);
-	expect(yaml).toContain('academic');
-	expect(yaml).toContain('research');
+	const tags = merged['tags'] as string[];
+	expect(tags).toContain('academic');
+	expect(tags).toContain('research');
 });
 
-test('alwaysInherit copies field from source', () => {
-	const { yaml } = runMerge(
+test('alwaysInherit copies wikilink from source and round-trips', () => {
+	const { merged } = runMerge(
 		{ course: '[[My Course]]' },
 		{},
 		[],
@@ -77,6 +117,12 @@ test('alwaysInherit copies field from source', () => {
 		false,
 		'source',
 	);
-	expect(yaml).toContain('course:');
-	expect(yaml).toContain('"[[My Course]]"');
+
+	const fileContent = simulateProcessFrontMatter('', (fm) => {
+		for (const [k, v] of Object.entries(merged)) fm[k] = v;
+	});
+
+	const fmBlock = fileContent.match(/^---\n([\s\S]*?)---/)?.[1] ?? '';
+	const parsed = yaml.load(fmBlock) as Record<string, unknown>;
+	expect(parsed['course']).toBe('[[My Course]]');
 });
