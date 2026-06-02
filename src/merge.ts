@@ -57,17 +57,17 @@ export function runMerge(
 		}
 	}
 
-	// 3. `up` field
+	// 3. `up` field — stored as array for Breadcrumbs compatibility
 	if (inheritUp) {
 		const upVal = `[[${sourceName}]]`;
 		const existing = fields.find((f) => f.key === 'up');
 		if (existing) {
-			existing.value = upVal;
+			existing.value = [upVal];
 			existing.origin = 'up';
 		} else {
-			fields.push({ key: 'up', value: upVal, origin: 'up' });
+			fields.push({ key: 'up', value: [upVal], origin: 'up' });
 		}
-		merged['up'] = upVal;
+		merged['up'] = [upVal];
 	}
 
 	// 4. Inject fields with conflict resolution
@@ -149,18 +149,28 @@ export function parseFieldValue(value: string): unknown {
 }
 
 /**
- * stringifyYaml doesn't quote strings starting with `[[` — YAML interprets
- * bare `[[foo]]` as a nested flow sequence. Fix after the fact.
+ * Ensure all wikilinks in YAML output use double quotes.
  *
- * Handles scalar lines:   `up: [[Note Name]]`
- * and list items:         `  - [[Note Name]]`
- * Skips already-quoted:   `up: "[[Note Name]]"` or `up: '[[Note Name]]'`
+ * js-yaml serializes strings starting with `[` using single quotes
+ * (e.g. `'[[person]]'`). Obsidian expects double-quoted wikilinks.
+ * Also handles the case where the value is unquoted (shouldn't happen
+ * after js-yaml, but defensive).
+ *
+ * Handles scalar lines:   `key: '[[Note]]'`  →  `key: "[[Note]]"`
+ * and list items:         `  - '[[Note]]'`   →  `  - "[[Note]]"`
  */
 export function quoteWikilinks(yaml: string): string {
-	return yaml.replace(
-		/^(\s*(?:[\w-][\w\s-]*:\s*|-\s+))(?!['"])(\[\[.+?\]\])(\s*)$/gm,
-		'$1"$2"$3',
-	);
+	return yaml
+		// Single-quoted wikilinks → double-quoted
+		.replace(
+			/^(\s*(?:[\w-][\w\s-]*:\s*|-\s+))'(\[\[.+?\]\])'(\s*)$/gm,
+			'$1"$2"$3',
+		)
+		// Bare unquoted wikilinks → double-quoted
+		.replace(
+			/^(\s*(?:[\w-][\w\s-]*:\s*|-\s+))(?!['"])(\[\[.+?\]\])(\s*)$/gm,
+			'$1"$2"$3',
+		);
 }
 
 export function parseFrontmatterString(raw: string): Record<string, unknown> {
