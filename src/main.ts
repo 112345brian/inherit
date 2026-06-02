@@ -191,12 +191,9 @@ export default class InheritPlugin extends Plugin {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
 			}
 
-			if (rule.runLinter) {
-				await this.runLinter();
-			}
-
-			// Wait for Linter (and any other plugins) to finish writing,
-			// then apply our frontmatter fields last so they always win
+			// Always run Linter if installed — it adds date fields etc.
+			// Our fields are applied after so they always win.
+			await this.runLinter();
 			await new Promise((r) => setTimeout(r, 400));
 			await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
 
