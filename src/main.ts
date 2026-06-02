@@ -183,18 +183,23 @@ export default class InheritPlugin extends Plugin {
 		try {
 			const newFile = await this.app.vault.create(targetPath, content);
 
-			// Open the file so Templater and Linter can run against it
+			// Open the file so Templater and Linter have an active file to work on
 			const leaf = this.app.workspace.getLeaf(false);
 			await leaf.openFile(newFile, { state: { mode: 'source' } });
+
+			// Let the view settle before running plugins
+			await new Promise((r) => setTimeout(r, 150));
 
 			if (rule.templatePath) {
 				await this.applyTemplaterTemplate(newFile, rule.templatePath);
 			}
 
-			// Always run Linter if installed — it adds date fields etc.
-			// Our fields are applied after so they always win.
+			// Run Linter — executeCommandById doesn't await completion,
+			// so we wait long enough for it to finish writing
 			await this.runLinter();
-			await new Promise((r) => setTimeout(r, 400));
+			await new Promise((r) => setTimeout(r, 800));
+
+			// Apply our fields last so they always win over Linter's output
 			await this.applyInjectFields(newFile, sourceMeta, sourceFile.basename, rule);
 
 			new Notice(`Created: ${linkText}`);
