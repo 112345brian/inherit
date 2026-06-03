@@ -80,10 +80,6 @@ npm run lint     # ESLint check
 npm test         # Jest test suite
 ```
 
-## API Documentation
-
-See https://docs.obsidian.md
-
 ---
 
 ## My Other Plugins
